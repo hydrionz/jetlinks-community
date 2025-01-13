@@ -1,21 +1,24 @@
 package org.jetlinks.community.device.service;
 
+import lombok.extern.slf4j.Slf4j;
 import org.jetlinks.community.device.spi.DeviceConfigMetadataSupplier;
-import org.jetlinks.core.metadata.ConfigMetadata;
-import org.jetlinks.core.metadata.ConfigScope;
-import org.jetlinks.core.metadata.DeviceConfigScope;
-import org.jetlinks.core.metadata.DeviceMetadataType;
+import org.jetlinks.core.metadata.*;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import javax.annotation.Nonnull;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
 
 @Component
+@Slf4j
 public class DefaultDeviceConfigMetadataManager implements DeviceConfigMetadataManager, BeanPostProcessor {
 
     private final List<DeviceConfigMetadataSupplier> suppliers = new CopyOnWriteArrayList<>();
@@ -65,11 +68,44 @@ public class DefaultDeviceConfigMetadataManager implements DeviceConfigMetadataM
                    .filter(meta -> org.apache.commons.collections4.CollectionUtils.isNotEmpty(meta.getProperties()));
     }
 
+
+    @Override
+    public Flux<ConfigMetadata> getProductConfigMetadataByAccessId(String productId,
+                                                                   String accessId) {
+        return Flux.fromIterable(suppliers)
+                   .flatMap(supplier -> supplier
+                       .getProductConfigMetadataByAccessId(productId, accessId)
+                       .onErrorResume(e -> {
+                           log.error("get product config metatada by gateway error", e);
+                           return Flux.empty();
+                       }))
+                   .map(config -> config.copy(DeviceConfigScope.product))
+                   .filter(config -> !CollectionUtils.isEmpty(config.getProperties()))
+                   .sort(Comparator.comparing(ConfigMetadata::getName));
+    }
+
+    @Override
+    public Mono<Set<String>> getProductConfigMetadataProperties(String productId) {
+        return this
+            .getProductConfigMetadata(productId)
+            .flatMapIterable(ConfigMetadata::getProperties)
+            .map(ConfigPropertyMetadata::getProperty)
+            .collect(Collectors.toSet());
+    }
+
     @Override
     public Object postProcessAfterInitialization(@Nonnull Object bean, @Nonnull String beanName) {
         if (bean instanceof DeviceConfigMetadataSupplier) {
             register(((DeviceConfigMetadataSupplier) bean));
         }
         return bean;
+    }
+
+    @Override
+    public Flux<Feature> getProductFeatures(String productId) {
+        return Flux
+            .fromIterable(suppliers)
+            .flatMap(supplier -> supplier.getProductFeatures(productId))
+            .distinct(Feature::getId);
     }
 }

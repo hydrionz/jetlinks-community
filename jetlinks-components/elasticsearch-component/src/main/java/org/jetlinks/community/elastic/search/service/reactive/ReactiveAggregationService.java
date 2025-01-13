@@ -4,10 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.elasticsearch.Version;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.search.aggregations.AggregationBuilder;
-import org.elasticsearch.search.aggregations.AggregationBuilders;
-import org.elasticsearch.search.aggregations.Aggregations;
-import org.elasticsearch.search.aggregations.BucketOrder;
+import org.elasticsearch.search.aggregations.*;
 import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogramAggregationBuilder;
 import org.elasticsearch.search.aggregations.bucket.histogram.DateHistogramInterval;
 import org.elasticsearch.search.aggregations.bucket.histogram.Histogram;
@@ -15,22 +12,21 @@ import org.elasticsearch.search.aggregations.bucket.histogram.LongBounds;
 import org.elasticsearch.search.aggregations.bucket.terms.Terms;
 import org.elasticsearch.search.aggregations.bucket.terms.TermsAggregationBuilder;
 import org.elasticsearch.search.aggregations.metrics.*;
+import org.elasticsearch.search.aggregations.support.ValuesSourceAggregationBuilder;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
 import org.hswebframework.ezorm.core.param.QueryParam;
 import org.hswebframework.ezorm.core.param.Term;
 import org.hswebframework.ezorm.core.param.TermType;
+import org.jetlinks.core.metadata.types.DateTimeType;
 import org.jetlinks.community.Interval;
 import org.jetlinks.community.elastic.search.index.ElasticSearchIndexManager;
 import org.jetlinks.community.elastic.search.service.AggregationService;
-import org.jetlinks.community.elastic.search.service.DefaultElasticSearchService;
 import org.jetlinks.community.elastic.search.utils.ElasticSearchConverter;
 import org.jetlinks.community.timeseries.query.*;
-import org.jetlinks.core.metadata.types.DateTimeType;
 import org.jetlinks.reactor.ql.utils.CastUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
@@ -45,14 +41,16 @@ import java.util.stream.Collectors;
  * @author zhouhao
  * @since 1.5
  **/
-@Service
 @Slf4j
 public class ReactiveAggregationService implements AggregationService {
-
 
     private final ReactiveElasticsearchClient restClient;
 
     private final ElasticSearchIndexManager indexManager;
+
+    //是否打开执行提示，打开后，聚合查询时会给每一个bucket构造global ordinals。单个索引数据量大于一百万时建议关闭。
+    private static final boolean IS_OPEN_GLOBAL_ORDINALS =
+        Boolean.parseBoolean(System.getProperty("elasticsearch.agg.query.execution_hint", "false"));
 
     @Autowired
     public ReactiveAggregationService(ElasticSearchIndexManager indexManager,
@@ -108,12 +106,19 @@ public class ReactiveAggregationService implements AggregationService {
                 .terms(group.getAlias())
                 .field(group.getProperty());
             if (group instanceof LimitGroup) {
-                builder.size(((LimitGroup) group).getLimit());
+                if (((LimitGroup) group).getLimit() > 0) {
+                    builder.size(((LimitGroup) group).getLimit());
+                }
             } else {
                 builder.size(100);
             }
+            //直接进行子聚合的计算
+            builder.collectMode(Aggregator.SubAggCollectionMode.DEPTH_FIRST);
 //            builder.missing(0);
-            return builder.executionHint("map");
+            if (IS_OPEN_GLOBAL_ORDINALS) {
+                builder.executionHint("map");
+            }
+            return builder;
         }
     }
 
@@ -142,8 +147,16 @@ public class ReactiveAggregationService implements AggregationService {
 
         boolean group = aggregationBuilder != null;
         for (AggregationColumn aggColumn : aggregationQueryParam.getAggColumns()) {
-            AggregationBuilder builder = AggType.of(aggColumn.getAggregation().name())
-                                                .aggregationBuilder(aggColumn.getAlias(), aggColumn.getProperty());
+            AggregationBuilder builder = AggType
+                .of(aggColumn.getAggregation().name())
+                .aggregationBuilder(aggColumn.getAlias(), aggColumn.getProperty());
+
+            if (builder instanceof ValuesSourceAggregationBuilder &&
+                aggColumn.getDefaultValue() != null) {
+                ((ValuesSourceAggregationBuilder<?>) builder)
+                    .missing(aggColumn.getDefaultValue());
+            }
+
             if (builder instanceof TopHitsAggregationBuilder) {
                 TopHitsAggregationBuilder topHitsBuilder = ((TopHitsAggregationBuilder) builder);
                 if (CollectionUtils.isEmpty(queryParam.getSorts())) {
@@ -154,7 +167,9 @@ public class ReactiveAggregationService implements AggregationService {
                                              .stream()
                                              .map(sort -> SortBuilders
                                                  .fieldSort(sort.getName())
-                                                 .order("desc".equalsIgnoreCase(sort.getOrder()) ? SortOrder.DESC : SortOrder.ASC))
+                                                 .order("desc".equalsIgnoreCase(sort.getOrder())
+                                                            ? SortOrder.DESC
+                                                            : SortOrder.ASC))
                                              .collect(Collectors.toList()));
                 }
                 if (aggColumn instanceof LimitAggregationColumn) {
@@ -170,36 +185,37 @@ public class ReactiveAggregationService implements AggregationService {
             }
         }
 
-        return Flux.fromArray(index)
-                   .flatMap(idx -> Mono.zip(indexManager.getIndexStrategy(idx), Mono.just(idx)))
-                   .collectList()
-                   .flatMap(strategy -> this
-                       .createSearchSourceBuilder(queryParam, index[0])
-                       .map(builder -> {
-                                aggs.forEach(builder.size(0)::aggregation);
-                                return new SearchRequest(strategy
-                                                             .stream()
-                                                             .map(tp2 -> tp2
-                                                                 .getT1()
-                                                                 .getIndexForSearch(tp2.getT2()))
-                                                             .toArray(String[]::new))
-                                    .indicesOptions(ReactiveElasticSearchService.indexOptions)
-                                    .source(builder);
-                            }
-                       )
-                   )
-                   .flatMap(restClient::searchForPage)
-                   .flatMapMany(this::parseResult)
-                   .as(flux -> {
-                       if (!group) {
-                           return flux
-                               .map(Map::entrySet)
-                               .flatMap(Flux::fromIterable)
-                               .collectMap(Map.Entry::getKey, Map.Entry::getValue)
-                               .flux();
-                       }
-                       return flux;
-                   })
+        return Flux
+            .fromArray(index)
+            .flatMap(idx -> Mono.zip(indexManager.getIndexStrategy(idx), Mono.just(idx)))
+            .collectList()
+            .flatMap(strategy -> this
+                .createSearchSourceBuilder(queryParam, index[0])
+                .map(builder -> {
+                         aggs.forEach(builder.size(0)::aggregation);
+                         return new SearchRequest(strategy
+                                                      .stream()
+                                                      .map(tp2 -> tp2
+                                                          .getT1()
+                                                          .getIndexForSearch(tp2.getT2()))
+                                                      .toArray(String[]::new))
+                             .indicesOptions(ReactiveElasticSearchService.indexOptions)
+                             .source(builder);
+                     }
+                )
+            )
+            .flatMap(restClient::searchForPage)
+            .flatMapMany(this::parseResult)
+            .as(flux -> {
+                if (!group) {
+                    return flux
+                        .map(Map::entrySet)
+                        .flatMap(Flux::fromIterable)
+                        .collectMap(Map.Entry::getKey, Map.Entry::getValue)
+                        .flux();
+                }
+                return flux;
+            })
             ;
     }
 
@@ -209,7 +225,8 @@ public class ReactiveAggregationService implements AggregationService {
                    .flatMap(agg -> parseAggregation(agg.getName(), agg), Integer.MAX_VALUE);
     }
 
-    private Flux<Map<String, Object>> parseAggregation(String name, org.elasticsearch.search.aggregations.Aggregation aggregation) {
+    private Flux<Map<String, Object>> parseAggregation(String name,
+                                                       org.elasticsearch.search.aggregations.Aggregation aggregation) {
         if (aggregation instanceof Terms) {
             return parseAggregation(((Terms) aggregation));
         }
@@ -244,8 +261,8 @@ public class ReactiveAggregationService implements AggregationService {
         return Flux.empty();
     }
 
-    private double getSafeNumber(double number) {
-        return (Double.isNaN(number) || Double.isInfinite(number)) ? 0D : number;
+    private Object getSafeNumber(double number) {
+        return (Double.isNaN(number) || Double.isInfinite(number)) ? null : number;
     }
 
     private Flux<Map<String, Object>> parseAggregation(Histogram aggregation) {
@@ -310,7 +327,7 @@ public class ReactiveAggregationService implements AggregationService {
         .ofDays(Integer.getInteger("elasticsearch.agg.default-range-day", 90))
         .toMillis();
 
-    private static long calculateStartWithTime(AggregationQueryParam param) {
+    static long calculateStartWithTime(AggregationQueryParam param) {
         long startWithParam = param.getStartWithTime();
         if (startWithParam == 0) {
             //从查询条件中提取时间参数来获取时间区间
@@ -335,6 +352,5 @@ public class ReactiveAggregationService implements AggregationService {
         }
         return startWithParam;
     }
-
 
 }

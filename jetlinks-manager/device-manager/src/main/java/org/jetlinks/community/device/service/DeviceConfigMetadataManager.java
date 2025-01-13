@@ -4,11 +4,11 @@ import org.jetlinks.community.device.entity.DeviceInstanceEntity;
 import org.jetlinks.community.device.entity.DeviceProductEntity;
 import org.jetlinks.community.device.spi.DeviceConfigMetadataSupplier;
 import org.jetlinks.core.message.codec.Transport;
-import org.jetlinks.core.metadata.ConfigMetadata;
-import org.jetlinks.core.metadata.ConfigPropertyMetadata;
-import org.jetlinks.core.metadata.ConfigScope;
-import org.jetlinks.core.metadata.DeviceMetadataType;
+import org.jetlinks.core.metadata.*;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
+import java.util.Set;
 
 
 /**
@@ -77,5 +77,33 @@ public interface DeviceConfigMetadataManager {
                                                   String metadataId,
                                                   String typeId,
                                                   ConfigScope... scopes);
+
+    /**
+     * 根据产品ID获取产品所需配置信息
+     *
+     * @param productId 产品ID
+     * @return 配置property集合
+     */
+    Mono<Set<String>> getProductConfigMetadataProperties(String productId);
+
+    /**
+     * 根据产品ID和网关ID获取配置信息
+     * <p>
+     * 使用指定的接入方式查询，忽略产品当前绑定的接入方式
+     * <p>
+     * 当配置来自产品绑定关系时，可根据productId查询
+     * <p>
+     * 当配置来自接入方式时，可根据accessId查询
+     * <p>
+     * 当配置来自协议包时，可根据accessId关联的协议查询
+     *
+     * @param productId 产品ID
+     * @param accessId 网关ID
+     * @return 配置信息
+     */
+    Flux<ConfigMetadata> getProductConfigMetadataByAccessId(String productId,
+                                                            String accessId);
+
+    Flux<Feature> getProductFeatures(String productId);
 
 }

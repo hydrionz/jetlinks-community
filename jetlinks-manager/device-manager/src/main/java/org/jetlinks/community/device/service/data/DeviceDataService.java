@@ -11,6 +11,7 @@ import org.jetlinks.community.device.entity.DeviceOperationLogEntity;
 import org.jetlinks.community.device.entity.DeviceProperty;
 import org.jetlinks.community.timeseries.query.Aggregation;
 import org.jetlinks.community.timeseries.query.AggregationData;
+import org.jetlinks.core.config.ConfigKey;
 import org.jetlinks.core.message.DeviceMessage;
 import org.jetlinks.core.metadata.DeviceMetadata;
 import org.jetlinks.core.metadata.EventMetadata;
@@ -33,6 +34,9 @@ import java.util.Map;
  */
 public interface DeviceDataService {
 
+
+    ConfigKey<String> STORE_POLICY_CONFIG_KEY = ConfigKey.of("storePolicy", "存储策略", String.class);
+
     /**
      * 注册设备物模型信息
      *
@@ -42,6 +46,8 @@ public interface DeviceDataService {
      */
     Mono<Void> registerMetadata(@Nonnull String productId,
                                 @Nonnull DeviceMetadata metadata);
+
+    Mono<Void> reloadMetadata(@Nonnull String productId, @Nonnull DeviceMetadata metadata);
 
     /**
      * 批量保存消息
@@ -151,6 +157,20 @@ public interface DeviceDataService {
                                                         @Nonnull String property,
                                                         @Nonnull QueryParamEntity query);
 
+
+    /**
+     * 分页查询属性
+     *
+     * @param deviceId 设备ID
+     * @param query    查询条件
+     * @return 分页查询结果
+     * @since 1.9
+     */
+    @Nonnull
+    Mono<PagerResult<DeviceProperty>> queryPropertyPage(@Nonnull String deviceId,
+                                                        @Nonnull QueryParamEntity query,
+                                                        @Nonnull String... property);
+
     /**
      * 分页查询设备日志
      *
@@ -217,6 +237,28 @@ public interface DeviceDataService {
                                                           @Nonnull QueryParamEntity query) {
         return queryEventPage(deviceId, event, query, false);
     }
+
+    /**
+     * 查询设备属性数据,但是不返回分页结果
+     *
+     * @param deviceId 设备ID
+     * @param query    查询条件
+     * @return 查询结果
+     */
+    @Nonnull
+    Flux<DeviceProperties> queryProperties(@Nonnull String deviceId,
+                                           @Nonnull QueryParamEntity query);
+
+    /**
+     * 根据产品分页查询属性数据,一个属性为一列,仅支持部分存储策略
+     *
+     * @param productId 产品ID
+     * @param query     查询条件
+     * @return 查询结果
+     */
+    @Nonnull
+    Mono<PagerResult<DeviceProperties>> queryPropertiesPageByProduct(@Nonnull String productId,
+                                                                     @Nonnull QueryParamEntity query);
 
 
     @Getter

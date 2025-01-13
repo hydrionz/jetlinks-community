@@ -12,6 +12,8 @@ import org.jetlinks.community.notify.manager.enums.SubscribeState;
 import javax.persistence.Column;
 import javax.persistence.Index;
 import javax.persistence.Table;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -45,6 +47,10 @@ public class NotifySubscriberEntity extends GenericEntity<String> {
     @Schema(description = "主题标识,如:device_alarm")
     private String topicProvider;
 
+    @Column(length = 64)
+    @Schema(description = "订阅提供商ID")
+    private String providerId;
+
     @Comment("订阅名称")
     @Column(length = 64, nullable = false)
     @Schema(description = "订阅名称")
@@ -58,7 +64,7 @@ public class NotifySubscriberEntity extends GenericEntity<String> {
     @Comment("主题订阅配置")
     @Column(length = 3000)
     @JsonCodec
-    @ColumnType
+    @ColumnType(javaType = String.class)
     @Schema(description = "订阅配置,根据主题标识不同而不同.")
     private Map<String, Object> topicConfig;
 
@@ -75,5 +81,22 @@ public class NotifySubscriberEntity extends GenericEntity<String> {
     @Schema(description = "状态.")
     private SubscribeState state;
 
+    @Column(length = 32)
+    @Schema(description = "订阅语言")
+    private String locale;
 
+
+    /**
+     * @see NotifySubscriberChannelEntity#getId()
+     */
+    @Column(length = 3000)
+    @Schema(description = "通知方式")
+    @JsonCodec
+    @ColumnType(javaType = String.class)
+    private List<String> notifyChannels;
+
+
+    public Locale toLocale() {
+        return locale == null ? Locale.getDefault() : Locale.forLanguageTag(locale);
+    }
 }
